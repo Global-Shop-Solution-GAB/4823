@@ -1,0 +1,199 @@
+Program.Sub.ScreenSU.Start
+Gui.Form..Create
+Gui.Form..Size(20475,1680)
+Gui.Form..MinX(0)
+Gui.Form..MinY(0)
+Gui.Form..Position(0,0)
+Gui.Form..BackColor(-2147483633)
+Gui.Form..MousePointer(0)
+Gui.Form..Event(UnLoad,Form_UnLoad)
+Gui.Form..Caption("Progress")
+Gui.Form.progressBar.Create(ProgressBar)
+Gui.Form.progressBar.Size(19740,255)
+Gui.Form.progressBar.Position(195,345)
+Gui.Form.lblProcessFTP.Create(Label,"Label",False,1935,255,0,210,795,True,0,"Arial",8,-2147483633,0)
+Gui.SendEDI..Create
+Gui.SendEDI..Caption("Send EDI Invoices")
+Gui.SendEDI..Size(4740,2325)
+Gui.SendEDI..MinX(0)
+Gui.SendEDI..MinY(0)
+Gui.SendEDI..Position(0,0)
+Gui.SendEDI..BackColor(-2147483633)
+Gui.SendEDI..MousePointer(0)
+Gui.SendEDI..Event(UnLoad,SendEDI_UnLoad)
+Gui.SendEDI.lblSendTo.Create(Label,"Send EDI to Customer ",True,3075,255,0,690,300,True,0,"Arial",8,-2147483633,0)
+Gui.SendEDI.cmdOK.Create(Button)
+Gui.SendEDI.cmdOK.Size(1215,375)
+Gui.SendEDI.cmdOK.Position(690,1005)
+Gui.SendEDI.cmdOK.Caption("Send")
+Gui.SendEDI.cmdOK.Event(Click,Process_and_Send_SFTP)
+Gui.SendEDI.lblNameCustomer.Create(Label,"Name Customer",True,3075,255,0,690,630,True,0,"Arial",8,-2147483633,0)
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+v.Global.sCustomer.Declare(string)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'BN Jan 10,2017
+
+'This project will convert the current AE810 File to a Tab delimited file with less data. 
+'It runs in Global Shop of the child company. Parent company buys Parts from child company so in child company GSS, the parent is the customer with a customer number.
+'Customer number is hardcoded. At this moment, they have not gone live yet, so it put the default "000101" as customer number, per Larry Zalinsky 
+
+'The program will be run from a custom menu item that will call ORD920GI to create the Standard AE810 File.
+'After the call, it will pick the file AE810 File, read and extract data, then save to Global/Files with name DateTimeStamp_810.txt
+'Then it will send the file from the child company to the parent company using SFTP.
+
+'Buyer ID - Customer
+'Invoice Date - MM/DD/YYYY
+'Invoice Number 
+'PO Number
+'Part Number
+'Quantity
+'Price - Up to 5 Decimal Places
+'Extended Price - Round to nearest cent
+
+F.Intrinsic.Control.SetErrorHandler("Main")
+F.Intrinsic.Control.ClearErrors
+v.Local..BulkDeclareString(sError,sHold,sSQL)
+
+F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass,15000)
+
+'Launch screen Order Entry > Transactions > Generate EDI Invoices - Custom
+F.Intrinsic.Task.LaunchGSSsync("ORD920GI","-c","")
+v.Global.sCustomer.Set("000101")
+
+f.Intrinsic.String.Build("Send to customer {0}",v.Global.sCustomer,v.Local.sHold)
+gui.SendEDI.lblSendTo.Caption(v.Local.sHold)
+f.Intrinsic.String.Build("Select Name_Customer from v_Customer_master where Customer = '{0}'",v.Global.sCustomer,v.Local.sSQL)
+f.ODBC.Connection!conx.ExecuteAndReturn(v.Local.sSQL,v.Local.sHold)
+gui.SendEDI.lblNameCustomer.Caption(v.Local.sHold)
+gui.SendEDI..AlwaysOnTop(True)
+gui.SendEDI..AlwaysOnTop(False)
+gui.SendEDI..Show
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: Project",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+Program.Sub.Main.End
+
+Program.Sub.Form_UnLoad.Start
+F.Intrinsic.Control.SetErrorHandler("Sub_Err")
+F.Intrinsic.Control.ClearErrors
+V.Local.sError.Declare(String)
+
+f.ODBC.Connection!conx.Close
+f.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Sub_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: Project",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+Program.Sub.Form_UnLoad.End
+
+Program.Sub.Process_and_Send_SFTP.Start
+F.Intrinsic.Control.SetErrorHandler("Sub_Err")
+F.Intrinsic.Control.ClearErrors
+v.Local..BulkDeclareString(sError,sFile,sFileString,sType,sInvoiceNumber,sCustomer,sMonth,sDate,sPO,sPart,sQty,sPrice,sExtended,sLine,sOutput,sHold,sBatFileLocation,sContentBatFile,sSFTP_Bat_folder)
+v.Local.iCounter.Declare(long)
+v.Local..BulkDeclareFloat(fQty,fPrice,fExtended)
+v.Local.bExists.Declare(boolean)
+
+'Read file and get data
+f.Intrinsic.UI.InvokeWaitDialog("Extracting...")
+F.Intrinsic.String.Build("{0}\AE810{1}.TXT",V.caller.FilesDir,v.Caller.CompanyCode,V.Local.sFile)
+'Check File exists
+f.Intrinsic.File.Exists(v.Local.sFile,v.Local.bExists)
+f.Intrinsic.Control.If(v.Local.bExists,=,False)
+	f.Intrinsic.String.Build("No file AE810{0} found.",v.Caller.CompanyCode,v.Local.sHold)
+	f.Intrinsic.UI.Msgbox(v.Local.sHold,"No file AE810XXX")
+	f.Intrinsic.Control.CallSub("Form_UnLoad")
+f.Intrinsic.Control.EndIf
+
+Function.Intrinsic.File.FileToStringArray(v.Local.sFile,v.Ambient.NewLine,v.Local.sFileString)
+
+'Show progressbar
+gui.Form..Show
+gui.Form.progressBar.Max(v.Local.sFileString.UBound)
+
+'Processing
+f.Intrinsic.Control.For(v.Local.iCounter,0,v.Local.sFileString.UBound,1)
+	gui.Form.progressBar.Value(v.Local.iCounter)	
+	f.Intrinsic.String.Mid(v.Local.sFileString(v.Local.iCounter),22,1,v.Local.sType)
+	f.Intrinsic.Control.SelectCase(v.Local.sType)	
+	f.Intrinsic.Control.Case("H")
+		f.Intrinsic.String.Mid(v.Local.sFileString(v.Local.iCounter),75,6,v.Local.sCustomer)
+		f.Intrinsic.String.Mid(v.Local.sFileString(v.Local.iCounter),254,8,v.Local.sDate)
+		f.Intrinsic.String.Mid(v.Local.sDate,5,2,v.Local.sMonth)
+		f.Intrinsic.String.Build("{0}/{1}/{2}",v.Local.sMonth,v.Local.sDate.Right2,v.Local.sDate.Left4,v.Local.sDate)
+		f.Intrinsic.String.Left(v.Local.sFileString(v.Local.iCounter),6,v.Local.sInvoiceNumber)
+	f.Intrinsic.Control.Case("L")
+		f.Intrinsic.Control.If(v.Local.sCustomer.Trim,=,v.Global.sCustomer)		
+			f.Intrinsic.String.Mid(v.Local.sFileString(v.Local.iCounter),217,15,v.Local.sPO)
+			f.Intrinsic.String.Mid(v.Local.sFileString(v.Local.iCounter),77,20,v.Local.sPart)		
+			f.Intrinsic.String.Mid(v.Local.sFileString(v.Local.iCounter),23,14,v.Local.sQty)
+			v.Local.fQty.Set(v.Local.sQty)
+			f.Intrinsic.Math.Round(v.Local.fQty,0,v.Local.fQty)
+			f.Intrinsic.String.Mid(v.Local.sFileString(v.Local.iCounter),39,14,v.Local.sPrice)
+			v.Local.fPrice.Set(v.Local.sPrice)
+			f.Intrinsic.String.Format(v.Local.fPrice,"0.00000",v.Local.sPrice)
+			f.Intrinsic.Math.Mult(v.Local.sQty,v.Local.sPrice,v.Local.fExtended)
+			f.Intrinsic.Math.Round(v.Local.fExtended,2,v.Local.sExtended)
+			f.Intrinsic.String.Format(v.Local.sExtended,"0.00",v.Local.sExtended)			
+			f.Intrinsic.String.Build("{0}{8}{1}{8}{2}{8}{3}{8}{4}{8}{5}{8}{6}{8}{7}",v.Local.sCustomer.Trim,v.Local.sDate,v.Local.sInvoiceNumber.Trim,v.Local.sPO.Trim,v.Local.sPart.Trim,v.Local.fQty,v.Local.sPrice,v.Local.sExtended,v.Ambient.Tab,v.Local.sLine)		
+			f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sOutput,v.Local.sLine,v.Ambient.NewLine,v.Local.sOutput)						
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.EndSelect
+f.Intrinsic.Control.Next(v.Local.iCounter)
+gui.Form..Visible(False)
+
+'Check if there is record for the specific customer
+F.Intrinsic.Control.If(V.Local.sOutput,=,"")
+	f.Intrinsic.String.Build("There is no EDI Invoices for customer {0}",v.Global.sCustomer,v.Local.sHold)
+	f.Intrinsic.UI.Msgbox(v.Local.sHold,"No invoices found")
+	f.Intrinsic.Control.CallSub("Form_UnLoad")
+F.Intrinsic.Control.EndIf
+
+'Save file
+f.Intrinsic.String.Format(v.Ambient.Date,"MMDDYYYY",v.Local.sDate)
+f.Intrinsic.String.Format(v.Ambient.Now,"HhNnSs",v.Local.sHold)
+F.Intrinsic.String.Build("{0}\{1}_{2}_810.txt",V.Caller.FilesDir,v.Local.sDate,v.Local.sHold,V.Local.sFile)
+F.Intrinsic.File.String2File(V.Local.sFile,V.Local.sOutput)	
+
+'Buid the FTPPut.bat content
+f.Intrinsic.String.Build("{0}C:\Program Files (x86)\WinSCP\WinSCP.com{0} ^{1}  /command ^{1}    {0}open sftp://cmsbilling:73trumpets@198.11.15.86/ -hostkey={0}{0}ssh-dss 1024 9a:a0:66:dd:00:3e:ea:0e:fc:50:c3:fe:55:d4:3a:07{0}{0}{0} ^{1}    {0}Put {2}{0} ^{1}    {0}exit{0}",v.Ambient.DblQuote,v.Ambient.NewLine,V.Local.sFile,v.Local.sContentBatFile)
+
+'Create FTPPut.bat file
+f.Intrinsic.File.String2File("C:\SFTP_Bat\FTPPut.bat",v.Local.sContentBatFile)
+
+'Send the file by using SFTP
+F.Intrinsic.Task.LaunchSync("C:\SFTP_Bat\FTPPut.bat")
+f.Intrinsic.UI.CloseWaitDialog
+
+gui.SendEDI..Visible(False)
+
+f.Intrinsic.String.Build("File {0} was sent successfully",v.Local.sfile,v.Local.sHold)
+f.Intrinsic.UI.Msgbox(v.Local.sHold,"File sent")
+
+f.Intrinsic.Control.CallSub("Form_UnLoad")
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Sub_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: Project",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+Program.Sub.Process_and_Send_SFTP.End
+
+Program.Sub.SendEDI_UnLoad.Start
+f.Intrinsic.Control.CallSub("Form_UnLoad")
+Program.Sub.SendEDI_UnLoad.End
